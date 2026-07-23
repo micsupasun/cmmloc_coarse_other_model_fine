@@ -56,6 +56,7 @@ def load_model_checkpoint(
     *,
     model_name,
     allowed_missing_prefixes=("language_encoder.llm_model.",),
+    allowed_unexpected_prefixes=(),
     allow_unexpected=False,
 ):
     """Load a checkpoint only when it is compatible with ``model``.
@@ -67,6 +68,13 @@ def load_model_checkpoint(
     expected = model.state_dict()
 
     unexpected = sorted(set(state) - set(expected))
+    disallowed_unexpected = [
+        key
+        for key in unexpected
+        if not any(
+            key.startswith(prefix) for prefix in allowed_unexpected_prefixes
+        )
+    ]
     missing = sorted(set(expected) - set(state))
     disallowed_missing = [
         key
@@ -88,8 +96,10 @@ def load_model_checkpoint(
         problems.append(
             "missing task-specific keys: " + ", ".join(disallowed_missing[:8])
         )
-    if unexpected and not allow_unexpected:
-        problems.append("unexpected keys: " + ", ".join(unexpected[:8]))
+    if disallowed_unexpected and not allow_unexpected:
+        problems.append(
+            "unexpected keys: " + ", ".join(disallowed_unexpected[:8])
+        )
     if shape_mismatches:
         formatted = ", ".join(
             f"{key} {actual} != {wanted}"

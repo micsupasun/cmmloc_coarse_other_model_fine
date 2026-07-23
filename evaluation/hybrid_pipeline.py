@@ -406,6 +406,10 @@ def main(argv=None):
         model_coarse,
         args.path_coarse,
         model_name="CMMLoc coarse",
+        # The released checkpoint contains a second, unused encoder left over
+        # from training. The official inference source only constructs and
+        # executes cell_encoder1, so these are the only tolerated extra keys.
+        allowed_unexpected_prefixes=("cell_encoder2.",),
     )
     retrievals, coarse_accuracies = run_coarse(
         model_coarse, dataloader, args

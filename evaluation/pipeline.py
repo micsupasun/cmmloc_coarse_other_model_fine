@@ -239,6 +239,7 @@ if __name__ == "__main__":
         model_coarse,
         args.path_coarse,
         model_name="coarse",
+        allowed_unexpected_prefixes=("cell_encoder2.",),
     )
     model_coarse.to(device)
 
