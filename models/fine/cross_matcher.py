@@ -74,6 +74,7 @@ class CrossMatch(torch.nn.Module):
                                                 intra_module_num_layers = args.fine_intra_module_num_layers, 
                                                 intra_module_num_heads = args.fine_intra_module_num_heads, 
                                                 is_fine = True,  
+                                                prealign_mlp_path = args.prealign_mlp_path,
                                                 ) 
         self.mlp_offsets = get_mlp_offset([self.embed_dim, self.embed_dim // 2, 2])
         self.loc_transform = get_mlp([self.embed_dim,self.embed_dim//2,1])

@@ -77,14 +77,20 @@ class LanguageEncoder(torch.nn.Module):
     def __init__(self, embedding_dim,  hungging_model = None, fixed_embedding=False, 
                  intra_module_num_layers=2, intra_module_num_heads=4, 
                  is_fine = False, inter_module_num_layers=2, inter_module_num_heads=4,
+                 prealign_mlp_path=None,
                  ):
         """Language encoder to encode a set of hints for each sentence"""
         super(LanguageEncoder, self).__init__()
 
         self.is_fine = is_fine
-        self.tokenizer = AutoTokenizer.from_pretrained("PATH_TO_T5")
+        if not hungging_model:
+            raise ValueError(
+                "A T5 model is required. Pass --t5_path with a local directory "
+                "or Hugging Face model id."
+            )
+        self.tokenizer = AutoTokenizer.from_pretrained(hungging_model)
         T5EncoderModel._keys_to_ignore_on_load_unexpected = ["decoder.*"]
-        self.llm_model = T5EncoderModel.from_pretrained("PATH_TO_T5")
+        self.llm_model = T5EncoderModel.from_pretrained(hungging_model)
         if fixed_embedding:
             self.fixed_embedding = True
             for para in self.llm_model.parameters():
@@ -97,7 +103,12 @@ class LanguageEncoder(torch.nn.Module):
         self.intra_module = nn.ModuleList([nn.TransformerEncoderLayer(input_dim, intra_module_num_heads,  dim_feedforward = input_dim * 4) for _ in range(intra_module_num_layers)])
 
         self.inter_mlp = get_mlp2([input_dim, embedding_dim], add_batchnorm=True)
-        dict_mlp = torch.load("PATH_TO_PREALIGN_MLP",map_location="cpu")
+        if not prealign_mlp_path:
+            raise ValueError(
+                "A pre-aligned language projection is required. "
+                "Pass --prealign_mlp_path."
+            )
+        dict_mlp = torch.load(prealign_mlp_path, map_location="cpu")
         load_dict_mlp = {}
         for k,v in dict_mlp.items():
             if "batches" in k:

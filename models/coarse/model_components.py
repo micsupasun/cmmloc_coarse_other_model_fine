@@ -201,9 +201,10 @@ class BertSelfAttention(nn.Module):
         return x.permute(0, 2, 1, 3)  # (N, nh, L, dh)
 
     def generate_cauchy_weight(self, props_len, width):
-        center = torch.arange(props_len).cuda() / props_len
-        wid = width*torch.ones(props_len).cuda()
-        weight = torch.linspace(0, 1, props_len)
+        device = self.query.weight.device
+        center = torch.arange(props_len, device=device) / props_len
+        wid = width * torch.ones(props_len, device=device)
+        weight = torch.linspace(0, 1, props_len, device=device)
         weight = weight.view(1, -1).expand(center.size(0), -1).to(center.device)
         center = center.unsqueeze(-1)
         wid = wid.unsqueeze(-1).clamp(1e-2) / 9

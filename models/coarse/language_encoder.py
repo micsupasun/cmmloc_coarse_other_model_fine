@@ -82,9 +82,14 @@ class LanguageEncoder(torch.nn.Module):
         super(LanguageEncoder, self).__init__()
 
         self.is_fine = is_fine
-        self.tokenizer = AutoTokenizer.from_pretrained("PATH_TO_T5")
+        if not hungging_model:
+            raise ValueError(
+                "A T5 model is required. Pass --t5_path with a local directory "
+                "or Hugging Face model id."
+            )
+        self.tokenizer = AutoTokenizer.from_pretrained(hungging_model)
         T5EncoderModel._keys_to_ignore_on_load_unexpected = ["decoder.*"]
-        self.llm_model = T5EncoderModel.from_pretrained("PATH_TO_T5")
+        self.llm_model = T5EncoderModel.from_pretrained(hungging_model)
         if fixed_embedding:
             self.fixed_embedding = True
             for para in self.llm_model.parameters():

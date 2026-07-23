@@ -47,7 +47,26 @@ class ObjectEncoder(torch.nn.Module):
         self.pointnet = PointNet2(
             len(known_classes), len(known_colors), args
         )  # The known classes are all the same now, at least for K360
-        self.pointnet.load_state_dict(torch.load(args.pointnet_path))
+        pointnet_checkpoint = torch.load(args.pointnet_path, map_location="cpu")
+        if isinstance(pointnet_checkpoint, torch.nn.Module):
+            pointnet_checkpoint = pointnet_checkpoint.state_dict()
+        for wrapper in ("state_dict", "model_state_dict", "model", "net"):
+            if (
+                isinstance(pointnet_checkpoint, dict)
+                and isinstance(pointnet_checkpoint.get(wrapper), dict)
+            ):
+                pointnet_checkpoint = pointnet_checkpoint[wrapper]
+                break
+        prefix = "object_encoder.pointnet."
+        if isinstance(pointnet_checkpoint, dict) and any(
+            key.startswith(prefix) for key in pointnet_checkpoint
+        ):
+            pointnet_checkpoint = {
+                key.removeprefix(prefix): value
+                for key, value in pointnet_checkpoint.items()
+                if key.startswith(prefix)
+            }
+        self.pointnet.load_state_dict(pointnet_checkpoint)
         # self.pointnet_dim = self.pointnet.lin2.weight.size(0)
 
         if args.pointnet_freeze:

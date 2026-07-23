@@ -38,8 +38,13 @@ class ObjectEncoder(torch.nn.Module):
 
         self.pos_encoder = get_mlp([3, 64, embed_dim])  # OPTION: pos_encoder layers
         self.color_encoder = get_mlp([3, 64, embed_dim])  # OPTION: color_encoder layers
-        dict_color= torch.load("PATH_TO_PREALIGN_COLOR_ENCODER",map_location="cpu")
-        dict_pointet = torch.load("PATH_TO_PREALIGN_POINTNET++",map_location="cpu")
+        if not args.prealign_color_path or not args.prealign_pointnet_path:
+            raise ValueError(
+                "CMMLoc fine-model construction requires --prealign_color_path "
+                "and --prealign_pointnet_path."
+            )
+        dict_color = torch.load(args.prealign_color_path, map_location="cpu")
+        dict_pointet = torch.load(args.prealign_pointnet_path, map_location="cpu")
         load_dict_color = {}
         load_dict_pointnet = {}
         for k,v in dict_color.items():

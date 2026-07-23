@@ -1,2 +1,7 @@
 data/
 checkpoints/
+results/
+third_party/MNCL/
+t5-large/
+__pycache__/
+*.py[cod]

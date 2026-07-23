@@ -18,6 +18,7 @@ from models.coarse.cell_retrieval import CellRetrievalNetwork
 from models.fine.cross_matcher import CrossMatch
 
 from evaluation.args import parse_arguments
+from evaluation.checkpoints import load_model_checkpoint
 from evaluation.utils import calc_sample_accuracies, print_accuracies
 
 from dataloading.kitti360pose.cells import Kitti360CoarseDataset, Kitti360CoarseDatasetMulti
@@ -195,7 +196,8 @@ if __name__ == "__main__":
     print(str(args).replace(",", "\n"), "\n")
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    print("device:", device, torch.cuda.get_device_name(0))
+    device_name = torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU"
+    print("device:", device, device_name)
     
     # Load datasets
     if args.no_pc_augment:
@@ -228,13 +230,16 @@ if __name__ == "__main__":
     # dataset_cell_only = dataset_retrieval.get_cell_dataset()
 
     # Load models
-    model_coarse_dic = torch.load(args.path_coarse, map_location=torch.device("cpu"))
     model_coarse = CellRetrievalNetwork(
                 KNOWN_CLASS,
                 COLOR_NAMES_K360,
                 args,
             )
-    model_coarse.load_state_dict(model_coarse_dic, strict = False)
+    load_model_checkpoint(
+        model_coarse,
+        args.path_coarse,
+        model_name="coarse",
+    )
     model_coarse.to(device)
 
     # if not hasattr(model_retrieval.language_encoder, "use_attn"):
@@ -244,13 +249,16 @@ if __name__ == "__main__":
 
 
     if args.path_fine:
-        model_fine_dic = torch.load(args.path_fine, map_location=torch.device("cpu"))
         model_fine = CrossMatch(
             KNOWN_CLASS,
             COLOR_NAMES_K360,
             args,
         )
-        model_fine.load_state_dict(model_fine_dic, strict = False)
+        load_model_checkpoint(
+            model_fine,
+            args.path_fine,
+            model_name="fine",
+        )
         model_fine.to(device)
     
     # eval_conf(model_matching, dataset_retrieval)
@@ -260,9 +268,10 @@ if __name__ == "__main__":
     retrievals, coarse_accuracies = run_coarse(model_coarse, dataloader_retrieval, args)
     print_accuracies(coarse_accuracies, "Coarse")
     
-    accuracies_offsets = run_fine(
-        model_fine, retrievals, dataloader_retrieval, args, transform_fine
-    )
-    # # # print_accuracies(accuracies_mean, "Fine (mean)")
-    print_accuracies(accuracies_offsets, "Fine")
+    if args.path_fine and not args.coarse_only:
+        accuracies_offsets = run_fine(
+            model_fine, retrievals, dataloader_retrieval, args, transform_fine
+        )
+        # # # print_accuracies(accuracies_mean, "Fine (mean)")
+        print_accuracies(accuracies_offsets, "Fine")
     # print_accuracies(accuracies_mean_conf, "Fine (mean-conf)")

@@ -1,10 +1,8 @@
 import argparse
-from argparse import ArgumentParser
-import os
 import os.path as osp
 
 
-def parse_arguments():
+def build_parser():
     parser = argparse.ArgumentParser(description="Text2Loc Evaluation")
 
     # Paths
@@ -15,6 +13,28 @@ def parse_arguments():
     parser.add_argument("--path_coarse", type=str, help="The path to the Cell-Retrieval model")
     parser.add_argument(
         "--path_fine", type=str, help="The path to the Hints-to-Objects matching model"
+    )
+    parser.add_argument(
+        "--hungging_model",
+        "--t5_path",
+        dest="hungging_model",
+        type=str,
+        help="Local T5/Flan-T5 directory or Hugging Face model id.",
+    )
+    parser.add_argument(
+        "--prealign_mlp_path",
+        type=str,
+        help="Pre-aligned language projection checkpoint used to construct a CMMLoc fine model.",
+    )
+    parser.add_argument(
+        "--prealign_color_path",
+        type=str,
+        help="Pre-aligned color encoder checkpoint used to construct a CMMLoc fine model.",
+    )
+    parser.add_argument(
+        "--prealign_pointnet_path",
+        type=str,
+        help="Pre-aligned PointNet checkpoint used to construct a CMMLoc fine model.",
     )
     parser.add_argument("--input_drop", default=0.2)
     parser.add_argument("--drop", default=0.2)
@@ -78,7 +98,6 @@ def parse_arguments():
     parser.add_argument("--object_inter_module_num_layers", type=int, default=2)
 
     # Language Encoder
-    parser.add_argument("--hungging_model", type=str, help="hugging face model")
     parser.add_argument("--fixed_embedding", action="store_true")
 
     parser.add_argument("--inter_module_num_heads", type=int, default=4)
@@ -88,8 +107,11 @@ def parse_arguments():
     parser.add_argument("--fine_intra_module_num_heads", type=int, default=4)
     parser.add_argument("--fine_intra_module_num_layers", type=int, default=1)
 
-    args = parser.parse_args()
+    return parser
 
+
+def parse_arguments(argv=None):
+    args = build_parser().parse_args(argv)
     assert osp.isfile(args.path_coarse)
     if args.path_fine:
         assert osp.isfile(args.path_fine)

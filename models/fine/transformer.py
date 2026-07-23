@@ -133,7 +133,9 @@ class Transformer(nn.Module):
         mask_local = mask[:, 1:]
         pos_embed_local = pos_embed[1:]
 
-        tgt = torch.zeros(refpoint_embed.shape[0], bs, d).cuda()
+        tgt = torch.zeros(
+            refpoint_embed.shape[0], bs, d, device=refpoint_embed.device
+        )
         hs, references = self.decoder(tgt, memory_local, memory_key_padding_mask=mask_local,
                           pos=pos_embed_local, refpoints_unsigmoid=refpoint_embed)  # (#layers, #queries, batch_size, d)
         # hs = hs.transpose(1, 2)  # (#layers, batch_size, #qeries, d)

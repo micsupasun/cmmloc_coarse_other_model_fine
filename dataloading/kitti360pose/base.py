@@ -1,5 +1,3 @@
-import sys
-sys.path.append("/home/xuyl/Text2Loc")
 from typing import List
 
 import os

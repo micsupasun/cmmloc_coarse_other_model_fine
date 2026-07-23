@@ -21,6 +21,9 @@ def parse_arguments():
     parser.add_argument(
         "--continue_path", type=str, help="Set to continue from a previous checkpoint"
     )
+    parser.add_argument("--prealign_mlp_path", type=str)
+    parser.add_argument("--prealign_color_path", type=str)
+    parser.add_argument("--prealign_pointnet_path", type=str)
 
     parser.add_argument("--no_pc_augment", action="store_true")
 
