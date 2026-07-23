@@ -239,7 +239,9 @@ if __name__ == "__main__":
         model_coarse,
         args.path_coarse,
         model_name="coarse",
-        allowed_unexpected_prefixes=("cell_encoder2.",),
+        # Match the original CMMLoc strict=False coarse checkpoint load while
+        # retaining validation of required keys and tensor shapes.
+        allow_unexpected=True,
     )
     model_coarse.to(device)
 
