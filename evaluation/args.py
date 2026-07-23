@@ -17,9 +17,13 @@ def build_parser():
     parser.add_argument(
         "--hungging_model",
         "--t5_path",
+        "--cmmloc_t5_path",
         dest="hungging_model",
         type=str,
-        help="Local T5/Flan-T5 directory or Hugging Face model id.",
+        help=(
+            "CMMLoc T5-large directory or Hugging Face model id. Released "
+            "CMMLoc checkpoints require T5-large, not Flan-T5."
+        ),
     )
     parser.add_argument(
         "--prealign_mlp_path",

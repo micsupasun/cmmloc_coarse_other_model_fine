@@ -88,6 +88,16 @@ def _build_parser():
         help="Checkout of https://github.com/dqliua/MNCL.",
     )
     parser.add_argument(
+        "--mncl_t5_path",
+        type=str,
+        default="google/flan-t5-large",
+        help=(
+            "MNCL Flan-T5-large directory or Hugging Face model id. This is "
+            "separate from --cmmloc_t5_path because the released models use "
+            "different text backbones."
+        ),
+    )
+    parser.add_argument(
         "--output_dir",
         type=Path,
         default=PROJECT_ROOT / "results" / "cmmloc_coarse_multi_fine",
@@ -115,12 +125,23 @@ def _build_parser():
         pointnet_path=str(
             DEFAULT_CHECKPOINT_ROOT / "CMMLoc" / "prealign_pointnet.pth"
         ),
-        hungging_model=str(PROJECT_ROOT / "t5-large"),
+        hungging_model="google-t5/t5-large",
         no_pc_augment=True,
         no_pc_augment_fine=True,
         fixed_embedding=True,
     )
     return parser
+
+
+def _resolve_model_source(value, *, label):
+    candidate = Path(value)
+    if candidate.exists():
+        return str(candidate.resolve())
+    if candidate.is_absolute() or value.startswith("."):
+        raise FileNotFoundError(
+            f"{label} model directory not found: {value}"
+        )
+    return value
 
 
 def _validate_args(args):
@@ -154,49 +175,56 @@ def _validate_args(args):
         )
     args.pointnet_path = str(pointnet_path)
 
-    t5_candidate = Path(args.hungging_model)
-    if t5_candidate.exists():
-        args.hungging_model = str(t5_candidate.resolve())
-    elif t5_candidate.is_absolute() or args.hungging_model.startswith("."):
-        raise FileNotFoundError(
-            "T5 model directory not found. Place it in t5-large/ or pass a "
-            f"Hugging Face model id with --t5_path: {args.hungging_model}"
+    args.hungging_model = _resolve_model_source(
+        args.hungging_model, label="CMMLoc T5-large"
+    )
+    args.mncl_t5_path = _resolve_model_source(
+        args.mncl_t5_path, label="MNCL Flan-T5-large"
+    )
+    cmmloc_source = args.hungging_model.replace("\\", "/").lower()
+    if "flan-t5" in cmmloc_source:
+        raise ValueError(
+            "Released CMMLoc checkpoints require the original T5-large "
+            "backbone, but a Flan-T5 model was passed via "
+            f"--cmmloc_t5_path: {args.hungging_model}. Use "
+            "google-t5/t5-large (or the matching local t5-large directory)."
         )
 
-    for model_name in args.fine_models:
-        checkpoint = args.checkpoint_root / model_name / "fine.pth"
-        if not checkpoint.is_file():
-            raise FileNotFoundError(
-                f"{model_name} fine checkpoint not found: {checkpoint}"
-            )
-
-    for model_name in set(args.fine_models).intersection(
-        CMMLOC_COMPATIBLE_FINE_MODELS
-    ):
-        model_dir = args.checkpoint_root / model_name
-        for filename in (
-            "prealign_mlp.pth",
-            "prealign_color_encoder.pth",
-            "prealign_pointnet.pth",
-        ):
-            path = model_dir / filename
-            if not path.is_file():
+    if not args.coarse_only:
+        for model_name in args.fine_models:
+            checkpoint = args.checkpoint_root / model_name / "fine.pth"
+            if not checkpoint.is_file():
                 raise FileNotFoundError(
-                    f"{model_name} construction checkpoint not found: {path}"
+                    f"{model_name} fine checkpoint not found: {checkpoint}"
                 )
 
-    if "MNCL" in args.fine_models:
-        required_mncl_files = (
-            args.mncl_root / "models" / "cross_matcher.py",
-            args.mncl_root / "dataloading" / "kitti360pose" / "eval.py",
-        )
-        missing = [path for path in required_mncl_files if not path.is_file()]
-        if missing:
-            raise FileNotFoundError(
-                "MNCL source checkout is missing. Run scripts/setup_mncl.ps1 "
-                f"or clone https://github.com/dqliua/MNCL into {args.mncl_root}. "
-                f"Missing: {', '.join(map(str, missing))}"
+        for model_name in set(args.fine_models).intersection(
+            CMMLOC_COMPATIBLE_FINE_MODELS
+        ):
+            model_dir = args.checkpoint_root / model_name
+            for filename in (
+                "prealign_mlp.pth",
+                "prealign_color_encoder.pth",
+                "prealign_pointnet.pth",
+            ):
+                path = model_dir / filename
+                if not path.is_file():
+                    raise FileNotFoundError(
+                        f"{model_name} construction checkpoint not found: {path}"
+                    )
+
+        if "MNCL" in args.fine_models:
+            required_mncl_files = (
+                args.mncl_root / "models" / "cross_matcher.py",
+                args.mncl_root / "dataloading" / "kitti360pose" / "eval.py",
             )
+            missing = [path for path in required_mncl_files if not path.is_file()]
+            if missing:
+                raise FileNotFoundError(
+                    "MNCL source checkout is missing. Run scripts/setup_mncl.ps1 "
+                    f"or clone https://github.com/dqliua/MNCL into {args.mncl_root}. "
+                    f"Missing: {', '.join(map(str, missing))}"
+                )
 
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("--device cuda was requested, but CUDA is unavailable.")
@@ -336,7 +364,7 @@ def _run_mncl_fine(args, retrievals_path):
         "--fine_checkpoint",
         str(args.checkpoint_root / "MNCL" / "fine.pth"),
         "--t5_path",
-        args.hungging_model,
+        args.mncl_t5_path,
         "--output_path",
         str(result_path),
         "--device",
@@ -396,6 +424,9 @@ def main(argv=None):
     )
     print(f"device: {device} ({device_label})")
     print(f"fine models: {', '.join(args.fine_models)}")
+    print(f"CMMLoc text backbone: {args.hungging_model}")
+    if "MNCL" in args.fine_models and not args.coarse_only:
+        print(f"MNCL text backbone: {args.mncl_t5_path}")
 
     dataloader, transform_fine = _make_dataset(args)
 
@@ -411,6 +442,7 @@ def main(argv=None):
         # missing current-model key or tensor-shape mismatch.
         allow_unexpected=True,
     )
+    print(f"CMMLoc coarse checkpoint load: {coarse_load_report}")
     retrievals, coarse_accuracies = run_coarse(
         model_coarse, dataloader, args
     )
@@ -427,11 +459,13 @@ def main(argv=None):
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    fine_results = _run_cmmloc_compatible_fine_models(
-        args, device, retrievals, dataloader, transform_fine
-    )
-    if "MNCL" in args.fine_models:
-        fine_results["MNCL"] = _run_mncl_fine(args, retrievals_path)
+    fine_results = {}
+    if not args.coarse_only:
+        fine_results = _run_cmmloc_compatible_fine_models(
+            args, device, retrievals, dataloader, transform_fine
+        )
+        if "MNCL" in args.fine_models:
+            fine_results["MNCL"] = _run_mncl_fine(args, retrievals_path)
 
     summary = {
         "schema_version": 1,
@@ -442,6 +476,7 @@ def main(argv=None):
         "coarse": {
             "model": "CMMLoc",
             "checkpoint": args.path_coarse,
+            "text_backbone": args.hungging_model,
             "load_report": coarse_load_report,
             "accuracies": coarse_accuracies,
             "retrievals_path": str(retrievals_path),

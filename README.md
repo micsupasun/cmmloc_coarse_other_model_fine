@@ -56,8 +56,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_mncl.ps1
 ไว้ที่ `third_party/MNCL` โดย source ของ MNCL จะไม่ถูก copy หรือ commit
 รวมเข้า repository นี้
 
-เตรียม T5-large ไว้ใน `t5-large/` หรือส่ง Hugging Face model id ผ่าน
-`--t5_path` ตัวอย่างเช่น `google/flan-t5-large`
+โมเดลที่เผยแพร่ใช้ text backbone คนละตัวกัน:
+
+- CMMLoc และ `my_model`: T5-large ปกติ (`google-t5/t5-large`)
+- MNCL: Flan-T5-large (`google/flan-t5-large`)
+
+ห้ามใช้ Flan-T5 กับ checkpoint CMMLoc เพราะ architecture เหมือนกันจึงโหลด
+ได้โดยไม่ error แต่ embeddings ไม่ตรงกับตอน train และ retrieval จะเกือบเป็นการสุ่ม
+กำหนดแยกกันผ่าน `--cmmloc_t5_path` และ `--mncl_t5_path`
 
 MNCL official implementation แนะนำ Python 3.10, PyTorch 1.11 และ CUDA
 11.3 ดู environment เพิ่มเติมจาก official MNCL README
@@ -66,7 +72,8 @@ MNCL official implementation แนะนำ Python 3.10, PyTorch 1.11 และ
 
 ```powershell
 python -m evaluation.hybrid_pipeline `
-  --t5_path .\t5-large `
+  --cmmloc_t5_path google-t5/t5-large `
+  --mncl_t5_path google/flan-t5-large `
   --top_k 1 3 5 10 `
   --threshs 5 10 15
 ```
@@ -83,8 +90,20 @@ checkpoints/k360_30-10_scG_pd10_pc4_spY_all/CMMLoc/prealign_pointnet.pth
 
 ```powershell
 python -m evaluation.hybrid_pipeline `
-  --t5_path .\t5-large `
+  --cmmloc_t5_path google-t5/t5-large `
+  --mncl_t5_path google/flan-t5-large `
   --use_test_set `
+  --top_k 1 3 5 10 `
+  --threshs 5 10 15
+```
+
+ตรวจ coarse อย่างเดียวก่อนเริ่ม fine stage ที่ใช้เวลานาน:
+
+```powershell
+python -m evaluation.hybrid_pipeline `
+  --cmmloc_t5_path google-t5/t5-large `
+  --use_test_set `
+  --coarse_only `
   --top_k 1 3 5 10 `
   --threshs 5 10 15
 ```
@@ -93,7 +112,7 @@ python -m evaluation.hybrid_pipeline `
 
 ```powershell
 python -m evaluation.hybrid_pipeline `
-  --t5_path .\t5-large `
+  --cmmloc_t5_path google-t5/t5-large `
   --fine_models CMMLoc my_model
 ```
 
@@ -106,7 +125,8 @@ python -m evaluation.hybrid_pipeline `
   --base_path .\data\k360_30-10_scG_pd10_pc4_spY_all `
   --checkpoint_root .\checkpoints\k360_30-10_scG_pd10_pc4_spY_all `
   --mncl_root .\third_party\MNCL `
-  --t5_path .\t5-large `
+  --cmmloc_t5_path .\t5-large `
+  --mncl_t5_path google/flan-t5-large `
   --output_dir .\results\experiment_01
 ```
 
