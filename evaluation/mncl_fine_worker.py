@@ -5,6 +5,8 @@ import hashlib
 import inspect
 import json
 import os
+import random
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,6 +21,23 @@ OFFICIAL_MNCL_FINE_SHA256 = (
 OFFICIAL_MNCL_POINTNET_SHA256 = (
     "662b00428a6b34f5053382d07bed2ff99897d3653528aca389528069905fc9a2"
 )
+OFFICIAL_MNCL_COMMIT = "11ea10e1658b38e53b2127f4ee55f9d4236d9f50"
+ALLOWED_MISSING_PREFIXES = (
+    "language_encoder.llm_model.",
+    # The current official source constructs MSG, but its fine forward discards
+    # MSG outputs and the released fine checkpoint predates those parameters.
+    "language_encoder.MSG.",
+)
+ALLOWED_LEGACY_CHECKPOINT_PREFIXES = (
+    "object_encoder.linear_esa_object.",
+    "language_encoder.attention.",
+    "language_encoder.linear_text.",
+    "language_encoder.linear_q_text.",
+    "language_encoder.linear_k_text.",
+    "language_encoder.linear_v_text.",
+    "language_encoder.gpool.",
+    "language_encoder.toare.",
+)
 
 
 def _parse_args(argv=None):
@@ -32,6 +51,7 @@ def _parse_args(argv=None):
     parser.add_argument("--t5_path", dest="hungging_model", required=True)
     parser.add_argument("--output_path", type=Path, required=True)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
+    parser.add_argument("--eval_seed", type=int, default=42)
     parser.add_argument("--top_k", type=int, nargs="+", default=[1, 3, 5, 10])
     parser.add_argument("--threshs", type=int, nargs="+", default=[5, 10, 15])
     parser.add_argument(
@@ -78,6 +98,38 @@ def _verify_official_checkpoint(path, expected_hash, label):
         )
 
 
+def _verify_official_source(path):
+    try:
+        revision = subprocess.check_output(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+        tracked_changes = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(path),
+                "status",
+                "--short",
+                "--untracked-files=no",
+            ],
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            f"Could not verify MNCL source checkout at {path}: {error}"
+        ) from error
+    if revision != OFFICIAL_MNCL_COMMIT or tracked_changes:
+        raise RuntimeError(
+            "MNCL source is not the verified clean official revision. "
+            f"Expected {OFFICIAL_MNCL_COMMIT}, got {revision}; "
+            f"tracked changes: {tracked_changes or 'none'}. Run "
+            "scripts/setup_mncl.ps1 with a clean third_party/MNCL directory."
+        )
+
+
 def _jsonable(value):
     if isinstance(value, dict):
         return {str(key): _jsonable(item) for key, item in value.items()}
@@ -101,7 +153,106 @@ def _load_tensor_state_dict(torch, path):
         if isinstance(state.get(wrapper), dict):
             state = state[wrapper]
             break
-    return state
+    if state and all(key.startswith("module.") for key in state):
+        state = {
+            key.removeprefix("module."): value
+            for key, value in state.items()
+        }
+    non_tensors = [
+        key
+        for key, value in state.items()
+        if not torch.is_tensor(value)
+    ]
+    if non_tensors:
+        raise TypeError(
+            "MNCL checkpoint contains non-tensor state entries: "
+            + ", ".join(non_tensors[:8])
+        )
+    return dict(state)
+
+
+def _load_official_fine_checkpoint(torch, model, path):
+    """Load every active MNCL task tensor and reject silent mismatches."""
+    state = _load_tensor_state_dict(torch, path)
+    expected = model.state_dict()
+    missing = sorted(set(expected) - set(state))
+    unexpected = sorted(set(state) - set(expected))
+    disallowed_missing = [
+        key
+        for key in missing
+        if not any(
+            key.startswith(prefix)
+            for prefix in ALLOWED_MISSING_PREFIXES
+        )
+    ]
+    disallowed_unexpected = [
+        key
+        for key in unexpected
+        if not any(
+            key.startswith(prefix)
+            for prefix in ALLOWED_LEGACY_CHECKPOINT_PREFIXES
+        )
+    ]
+    shape_mismatches = sorted(
+        (
+            key,
+            tuple(state[key].shape),
+            tuple(expected[key].shape),
+        )
+        for key in set(state).intersection(expected)
+        if tuple(state[key].shape) != tuple(expected[key].shape)
+    )
+    problems = []
+    if disallowed_missing:
+        problems.append(
+            "missing active keys: " + ", ".join(disallowed_missing[:8])
+        )
+    if disallowed_unexpected:
+        problems.append(
+            "unknown legacy keys: "
+            + ", ".join(disallowed_unexpected[:8])
+        )
+    if shape_mismatches:
+        problems.append(
+            "shape mismatches: "
+            + ", ".join(
+                f"{key} {actual} != {wanted}"
+                for key, actual, wanted in shape_mismatches[:8]
+            )
+        )
+    if problems:
+        raise RuntimeError(
+            "Official MNCL fine checkpoint/source compatibility failed: "
+            + "; ".join(problems)
+        )
+
+    compatible = {
+        key: value
+        for key, value in state.items()
+        if key in expected
+        and tuple(value.shape) == tuple(expected[key].shape)
+    }
+    model.load_state_dict(compatible, strict=False)
+    if not compatible:
+        raise RuntimeError(
+            "No MNCL checkpoint tensors matched the official model."
+        )
+    return {
+        "loaded_tensors": len(compatible),
+        "allowed_missing_tensors": missing,
+        "allowed_legacy_tensors": unexpected,
+        "shape_mismatches": [],
+    }
+
+
+def _seed_everything(torch, seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def _construct_official_model(torch, CrossMatch, known_classes, known_colors, args):
@@ -262,6 +413,7 @@ def main(argv=None):
     required_source = args.mncl_root / "models" / "cross_matcher.py"
     if not required_source.is_file():
         raise FileNotFoundError(f"Official MNCL source not found: {required_source}")
+    _verify_official_source(args.mncl_root)
     _verify_official_checkpoint(
         args.fine_checkpoint,
         OFFICIAL_MNCL_FINE_SHA256,
@@ -336,15 +488,17 @@ def main(argv=None):
     model = _construct_official_model(
         torch, CrossMatch, KNOWN_CLASS, COLOR_NAMES_K360, args
     )
-    state = _load_tensor_state_dict(torch, args.fine_checkpoint)
-    incompatible = model.load_state_dict(state, strict=False)
-    if any(key.startswith("mlp_offsets.") for key in incompatible.missing_keys):
-        raise RuntimeError("MNCL fine checkpoint is missing its output regressor.")
-    matched_tensors = len(state) - len(incompatible.unexpected_keys)
-    if matched_tensors <= 0:
-        raise RuntimeError("No MNCL checkpoint tensors matched the official model.")
+    load_report = _load_official_fine_checkpoint(
+        torch,
+        model,
+        args.fine_checkpoint,
+    )
     model.to(device)
 
+    # Match the point subsets used by the other fine backends. This reset is
+    # deliberately after construction/loading because those steps may consume
+    # random numbers even though evaluation itself is deterministic.
+    _seed_everything(torch, args.eval_seed)
     accuracies = _run_fine(
         torch,
         tqdm,
@@ -361,13 +515,12 @@ def main(argv=None):
     result = {
         "backend": "official_mncl",
         "source": "https://github.com/dqliua/MNCL",
+        "source_commit": OFFICIAL_MNCL_COMMIT,
         "checkpoint": str(args.fine_checkpoint),
         "checkpoint_sha256": OFFICIAL_MNCL_FINE_SHA256,
-        "load_report": {
-            "matched_tensors": matched_tensors,
-            "missing_tensors": incompatible.missing_keys,
-            "unexpected_tensors": incompatible.unexpected_keys,
-        },
+        "text_backbone": args.hungging_model,
+        "eval_seed": args.eval_seed,
+        "load_report": load_report,
         "accuracies": accuracies,
     }
     args.output_path.parent.mkdir(parents=True, exist_ok=True)

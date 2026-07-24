@@ -6,6 +6,8 @@ MNCL runs in an isolated subprocess so its top-level ``models`` package cannot
 collide with CMMLoc's package.
 """
 
+import copy
+import hashlib
 import json
 import random
 import subprocess
@@ -32,7 +34,8 @@ from evaluation.checkpoints import load_model_checkpoint
 from evaluation.pipeline import run_coarse, run_fine
 from evaluation.utils import print_accuracies
 from models.coarse.cell_retrieval import CellRetrievalNetwork
-from models.fine.cross_matcher import CrossMatch
+from models.fine.cross_matcher import CrossMatch as CMMLocCrossMatch
+from models.my_model.cross_matcher import CrossMatch as MyModelCrossMatch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,8 +43,36 @@ DEFAULT_DATASET = PROJECT_ROOT / "data" / "k360_30-10_scG_pd10_pc4_spY_all"
 DEFAULT_CHECKPOINT_ROOT = (
     PROJECT_ROOT / "checkpoints" / "k360_30-10_scG_pd10_pc4_spY_all"
 )
-CMMLOC_COMPATIBLE_FINE_MODELS = ("CMMLoc", "my_model")
 SUPPORTED_FINE_MODELS = ("CMMLoc", "MNCL", "my_model")
+FINE_MODEL_BACKENDS = {
+    "CMMLoc": ("official_cmmloc", CMMLocCrossMatch),
+    "my_model": ("cmmloc_mnclv4", MyModelCrossMatch),
+}
+MY_MODEL_SOURCE_HASHES = {
+    "models/fine/cross_matcher.py": (
+        "23bcc6e87a48aeb6ff8014e34f6ada1852b78410dd1bc2a18894bdb422c49846"
+    ),
+    "models/fine/language_encoder.py": (
+        "3a5cff499e9c29b842fa30492c517c9ba4d6525545a38fea8d1e14b7d74aa3b3"
+    ),
+    "models/fine/object_encoder.py": (
+        "21b2b240343948a48798342c8ea61f2c81015b24730a09f471fe384870dd7a85"
+    ),
+}
+EXPECTED_CHECKPOINT_SHA256 = {
+    "CMMLoc/coarse.pth": (
+        "5e14e158c3de1fc046d9b970ef1d06c6d4a98d55a1cfdd09f6d26dfc23076f85"
+    ),
+    "CMMLoc/fine.pth": (
+        "720623e7e25866b0e552b83080202bd3ec855672e0bc83cd962c173506cd648a"
+    ),
+    "MNCL/fine.pth": (
+        "0a1727faf5108518a83ec182ced6b0e6594f8190267c1533c22c525ea0c62dd4"
+    ),
+    "my_model/fine.pth": (
+        "acea2f8fbe58aae256d942606dfd269fa9c3b486849b64edd24cf8720c1fbe1e"
+    ),
+}
 
 
 def _jsonable(value):
@@ -61,6 +92,25 @@ def _write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         json.dump(_jsonable(payload), handle, indent=2, ensure_ascii=False)
+
+
+def _sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_checkpoint_hash(path, artifact_name):
+    actual = _sha256(path)
+    expected = EXPECTED_CHECKPOINT_SHA256[artifact_name]
+    if actual != expected:
+        raise RuntimeError(
+            f"{artifact_name} is not the checkpoint audited for this "
+            f"comparison. Expected SHA-256 {expected}, got {actual}: {path}"
+        )
+    return actual
 
 
 def _build_parser():
@@ -96,6 +146,31 @@ def _build_parser():
             "separate from --cmmloc_t5_path because the released models use "
             "different text backbones."
         ),
+    )
+    parser.add_argument(
+        "--my_model_t5_path",
+        type=str,
+        default="google-t5/t5-large",
+        help=(
+            "T5-large directory/model id for CMMLoc_MNCLv4. This is separate "
+            "so the custom model cannot inherit another backend's text "
+            "configuration accidentally."
+        ),
+    )
+    parser.add_argument(
+        "--my_model_text_max_length",
+        type=int,
+        default=128,
+        help=(
+            "Token limit used by CMMLoc_MNCLv4 fine training/evaluation "
+            "(the v4 evaluation default is 128)."
+        ),
+    )
+    parser.add_argument(
+        "--eval_seed",
+        type=int,
+        default=42,
+        help="Reset before every fine backend so point sampling is identical.",
     )
     parser.add_argument(
         "--output_dir",
@@ -167,6 +242,7 @@ def _validate_args(args):
             f"CMMLoc coarse checkpoint not found: {coarse_checkpoint}"
         )
     args.path_coarse = str(coarse_checkpoint)
+    _verify_checkpoint_hash(args.path_coarse, "CMMLoc/coarse.pth")
 
     pointnet_path = Path(args.pointnet_path).resolve()
     if not pointnet_path.is_file():
@@ -181,6 +257,9 @@ def _validate_args(args):
     args.mncl_t5_path = _resolve_model_source(
         args.mncl_t5_path, label="MNCL Flan-T5-large"
     )
+    args.my_model_t5_path = _resolve_model_source(
+        args.my_model_t5_path, label="CMMLoc_MNCLv4 T5-large"
+    )
     cmmloc_source = args.hungging_model.replace("\\", "/").lower()
     if "flan-t5" in cmmloc_source:
         raise ValueError(
@@ -189,6 +268,15 @@ def _validate_args(args):
             f"--cmmloc_t5_path: {args.hungging_model}. Use "
             "google-t5/t5-large (or the matching local t5-large directory)."
         )
+    my_model_source = args.my_model_t5_path.replace("\\", "/").lower()
+    if "flan-t5" in my_model_source:
+        raise ValueError(
+            "CMMLoc_MNCLv4 was trained with standard T5-large, but a "
+            "Flan-T5 model was passed via --my_model_t5_path: "
+            f"{args.my_model_t5_path}."
+        )
+    if args.my_model_text_max_length <= 0:
+        raise ValueError("--my_model_text_max_length must be positive.")
 
     if not args.coarse_only:
         for model_name in args.fine_models:
@@ -197,9 +285,13 @@ def _validate_args(args):
                 raise FileNotFoundError(
                     f"{model_name} fine checkpoint not found: {checkpoint}"
                 )
+            _verify_checkpoint_hash(
+                checkpoint,
+                f"{model_name}/fine.pth",
+            )
 
         for model_name in set(args.fine_models).intersection(
-            CMMLOC_COMPATIBLE_FINE_MODELS
+            FINE_MODEL_BACKENDS
         ):
             model_dir = args.checkpoint_root / model_name
             for filename in (
@@ -288,6 +380,9 @@ def _retrieval_payload(args, dataloader, retrievals, coarse_accuracies):
         "top_k": list(args.top_k),
         "thresholds": list(args.threshs),
         "coarse_checkpoint": args.path_coarse,
+        "coarse_checkpoint_sha256": _sha256(args.path_coarse),
+        "text_backbone": args.hungging_model,
+        "eval_seed": args.eval_seed,
         "coarse_accuracies": coarse_accuracies,
         "query_fingerprints": [
             {
@@ -301,52 +396,94 @@ def _retrieval_payload(args, dataloader, retrievals, coarse_accuracies):
     }
 
 
-def _set_prealign_paths(args, model_name):
+def _fine_args_for_model(args, model_name):
+    """Return isolated construction/evaluation args for one fine backend."""
+    model_args = copy.copy(args)
     model_dir = args.checkpoint_root / model_name
-    args.prealign_mlp_path = str(model_dir / "prealign_mlp.pth")
-    args.prealign_color_path = str(model_dir / "prealign_color_encoder.pth")
-    args.prealign_pointnet_path = str(model_dir / "prealign_pointnet.pth")
+    model_args.prealign_mlp_path = str(model_dir / "prealign_mlp.pth")
+    model_args.prealign_color_path = str(
+        model_dir / "prealign_color_encoder.pth"
+    )
+    model_args.prealign_pointnet_path = str(
+        model_dir / "prealign_pointnet.pth"
+    )
+    if model_name == "my_model":
+        model_args.hungging_model = args.my_model_t5_path
+        model_args.text_max_length = args.my_model_text_max_length
+    else:
+        model_args.hungging_model = args.hungging_model
+    return model_args
 
 
-def _run_cmmloc_compatible_fine_models(
+def _run_local_fine_models(
     args, device, retrievals, dataloader, transform_fine
 ):
     selected = [
         model_name
         for model_name in args.fine_models
-        if model_name in CMMLOC_COMPATIBLE_FINE_MODELS
+        if model_name in FINE_MODEL_BACKENDS
     ]
     if not selected:
         return {}
 
-    # Both checkpoints have the same CMMLoc fine architecture. Construct once;
-    # the compatibility checker guarantees that each task-specific tensor is
-    # overwritten before inference.
-    _set_prealign_paths(args, selected[0])
-    model = CrossMatch(KNOWN_CLASS, COLOR_NAMES_K360, args).to(device)
     results = {}
-
     for model_name in selected:
+        backend_name, model_class = FINE_MODEL_BACKENDS[model_name]
+        model_args = _fine_args_for_model(args, model_name)
         checkpoint = args.checkpoint_root / model_name / "fine.pth"
+        print(
+            f"Constructing isolated {model_name} fine backend: "
+            f"{backend_name}"
+        )
+        model = model_class(
+            KNOWN_CLASS,
+            COLOR_NAMES_K360,
+            model_args,
+        ).to(device)
         report = load_model_checkpoint(
             model,
             checkpoint,
             model_name=model_name,
         )
+
+        # FixedPoints may sample points lazily. Reset after model construction
+        # so every backend receives the same random point subset regardless of
+        # initialization work or evaluation order.
+        _seed_everything(args.eval_seed)
         accuracies = run_fine(
-            model, retrievals, dataloader, args, transform_fine
+            model,
+            retrievals,
+            dataloader,
+            model_args,
+            transform_fine,
         )
         print_accuracies(accuracies, f"Fine ({model_name})")
-        results[model_name] = {
-            "backend": "cmmloc",
+        result = {
+            "backend": backend_name,
             "checkpoint": str(checkpoint),
+            "checkpoint_sha256": _sha256(checkpoint),
+            "text_backbone": model_args.hungging_model,
+            "text_max_length": (
+                model_args.text_max_length
+                if model_name == "my_model"
+                else None
+            ),
+            "eval_seed": args.eval_seed,
             "load_report": report,
             "accuracies": accuracies,
         }
+        if model_name == "my_model":
+            result["source_lineage"] = "CMMLoc_MNCLv4"
+            result["audited_source_sha256"] = MY_MODEL_SOURCE_HASHES
+        results[model_name] = result
+        _write_json(
+            args.output_dir / f"{model_name.lower()}_fine.json",
+            result,
+        )
 
-    del model
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+        del model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
     return results
 
 
@@ -369,6 +506,8 @@ def _run_mncl_fine(args, retrievals_path):
         str(result_path),
         "--device",
         args.device,
+        "--eval_seed",
+        str(args.eval_seed),
         "--top_k",
         *map(str, args.top_k),
         "--threshs",
@@ -415,7 +554,7 @@ def _run_mncl_fine(args, retrievals_path):
 def main(argv=None):
     args = _build_parser().parse_args(argv)
     _validate_args(args)
-    _seed_everything(42)
+    _seed_everything(args.eval_seed)
     device = _select_device(args.device)
     device_label = (
         torch.cuda.get_device_name(device)
@@ -425,6 +564,12 @@ def main(argv=None):
     print(f"device: {device} ({device_label})")
     print(f"fine models: {', '.join(args.fine_models)}")
     print(f"CMMLoc text backbone: {args.hungging_model}")
+    if "my_model" in args.fine_models and not args.coarse_only:
+        print(
+            "my_model backend: CMMLoc_MNCLv4; "
+            f"text backbone: {args.my_model_t5_path}; "
+            f"max length: {args.my_model_text_max_length}"
+        )
     if "MNCL" in args.fine_models and not args.coarse_only:
         print(f"MNCL text backbone: {args.mncl_t5_path}")
 
@@ -461,7 +606,7 @@ def main(argv=None):
 
     fine_results = {}
     if not args.coarse_only:
-        fine_results = _run_cmmloc_compatible_fine_models(
+        fine_results = _run_local_fine_models(
             args, device, retrievals, dataloader, transform_fine
         )
         if "MNCL" in args.fine_models:
@@ -473,9 +618,11 @@ def main(argv=None):
         "query_count": len(retrievals),
         "top_k": list(args.top_k),
         "thresholds": list(args.threshs),
+        "eval_seed": args.eval_seed,
         "coarse": {
             "model": "CMMLoc",
             "checkpoint": args.path_coarse,
+            "checkpoint_sha256": _sha256(args.path_coarse),
             "text_backbone": args.hungging_model,
             "load_report": coarse_load_report,
             "accuracies": coarse_accuracies,

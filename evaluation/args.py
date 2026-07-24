@@ -103,6 +103,12 @@ def build_parser():
 
     # Language Encoder
     parser.add_argument("--fixed_embedding", action="store_true")
+    parser.add_argument(
+        "--text_max_length",
+        type=int,
+        default=128,
+        help="Text token limit used by backends that were trained with one.",
+    )
 
     parser.add_argument("--inter_module_num_heads", type=int, default=4)
     parser.add_argument("--inter_module_num_layers", type=int, default=1)
